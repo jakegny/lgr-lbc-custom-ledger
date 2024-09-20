@@ -2,7 +2,6 @@ use crate::blockchain::block::{Block, BlockHeader};
 use crate::blockchain::transaction::{Transaction, TransactionOutput};
 use crate::utils::double_sha256;
 use num_bigint::BigUint;
-use secp256k1::ecdsa::Signature;
 use std::collections::{HashMap, HashSet};
 
 /// Represents the blockchain, containing a list of blocks.
@@ -98,11 +97,6 @@ impl Blockchain {
         let mut spent_outpoints = HashSet::new();
 
         for tx in transactions {
-            // Skip coinbase transaction validation for simplicity
-            if tx.inputs.is_empty() {
-                continue;
-            }
-
             // Validate each transaction
             self.validate_transaction(tx, &temp_utxo_set)?;
 
@@ -144,11 +138,30 @@ impl Blockchain {
         tx: &Transaction,
         utxo_set: &HashMap<OutPoint, TransactionOutput>,
     ) -> Result<(), String> {
-        // Check transaction inputs
+        // Skip coinbase transaction validation for simplicity
+        if tx.inputs.is_empty() {
+            return Ok(());
+        }
+
+        // Define closure to get previous output
+        let get_previous_output = |txid: &[u8], index: u32| -> Option<TransactionOutput> {
+            let outpoint = OutPoint {
+                txid: txid.to_vec(),
+                index,
+            };
+            utxo_set.get(&outpoint).cloned()
+        };
+
+        // Verify the transaction inputs using the transactions.rs method
+        if !tx.verify_inputs(get_previous_output) {
+            return Err("Invalid transaction signature".to_string());
+        }
+
+        // Check transaction inputs and outputs amounts
         let mut total_input_value = 0u64;
         let mut total_output_value = 0u64;
 
-        for (i, input) in tx.inputs.iter().enumerate() {
+        for input in &tx.inputs {
             let outpoint = OutPoint {
                 txid: input.previous_output_hash.clone(),
                 index: input.previous_output_index,
@@ -157,28 +170,6 @@ impl Blockchain {
             let prev_output = utxo_set
                 .get(&outpoint)
                 .ok_or("UTXO not found".to_string())?;
-
-            // Validate signature
-            let secp = secp256k1::Secp256k1::new();
-            let public_key = extract_public_key(&input.script_sig)?;
-            let pubkey_hash = double_sha256(&public_key.serialize());
-
-            if &pubkey_hash[..] != prev_output.script_pub_key.as_slice() {
-                return Err("Public key hash does not match script_pub_key".to_string());
-            }
-
-            // Prepare the transaction hash for signature verification
-            let sighash =
-                tx.signature_hash(i, &prev_output.script_pub_key, SigHashType::All as u32)?;
-
-            let msg = secp256k1::Message::from_digest_slice(&sighash).map_err(|e| e.to_string())?;
-
-            let signature = extract_signature(&input.script_sig)?;
-
-            // Verify the signature
-            if secp.verify_ecdsa(&msg, &signature, &public_key).is_err() {
-                return Err("Invalid transaction signature".to_string());
-            }
 
             total_input_value = total_input_value
                 .checked_add(prev_output.amount)
@@ -231,7 +222,6 @@ impl Blockchain {
         let target = compact_to_target(header.difficulty_target);
         let serialized_header =
             bincode::serialize(header).expect("Failed to serialize block header");
-        // let hash = sha256d::Hash::hash(&serialized_header);
         let hash = double_sha256(&serialized_header);
         let hash_value = BigUint::from_bytes_be(&hash);
 
@@ -260,46 +250,4 @@ fn compact_to_target(bits: u32) -> num_bigint::BigUint {
     } else {
         BigUint::from(mantissa) << (8 * (exponent - 3))
     }
-}
-
-/// Extracts the public key from the scriptSig.
-fn extract_public_key(script_sig: &[u8]) -> Result<secp256k1::PublicKey, String> {
-    if script_sig.len() < 1 {
-        return Err("scriptSig too short to contain public key".to_string());
-    }
-    let sig_len = script_sig[0] as usize;
-    if script_sig.len() < sig_len + 1 + 1 {
-        return Err("scriptSig too short to contain public key".to_string());
-    }
-    let pubkey_len = script_sig[sig_len + 1] as usize;
-    let pubkey_start = sig_len + 2;
-    let pubkey_end = pubkey_start + pubkey_len;
-    if script_sig.len() < pubkey_end {
-        return Err("scriptSig too short to contain full public key".to_string());
-    }
-    let pubkey_bytes = &script_sig[pubkey_start..pubkey_end];
-    secp256k1::PublicKey::from_slice(pubkey_bytes).map_err(|e| e.to_string())
-}
-
-/// Extracts the signature from the scriptSig.
-fn extract_signature(script_sig: &[u8]) -> Result<Signature, String> {
-    if script_sig.len() < 1 {
-        return Err("scriptSig too short to contain signature".to_string());
-    }
-    let sig_len = script_sig[0] as usize;
-    if script_sig.len() < sig_len + 1 {
-        return Err("scriptSig too short to contain full signature".to_string());
-    }
-    let sig_bytes = &script_sig[1..(sig_len + 1)];
-    let mut sig_bytes_without_sighash = sig_bytes.to_vec();
-    // Remove the sighash type byte
-    sig_bytes_without_sighash.pop();
-    Signature::from_der(&sig_bytes_without_sighash).map_err(|e| e.to_string())
-}
-
-/// SIGHASH types for transaction signing
-#[repr(u32)]
-pub enum SigHashType {
-    All = 1,
-    // Other SIGHASH types can be added here
 }
