@@ -1,2 +1,3 @@
-# lgr-lbc-custom-ledger
+# Rusty Coin
+
 Rust Based Blockchain Learning Project
