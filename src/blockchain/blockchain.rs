@@ -2,9 +2,13 @@ use crate::blockchain::block::{Block, BlockHeader};
 use crate::blockchain::transaction::{Transaction, TransactionOutput};
 use crate::utils::double_sha256;
 use num_bigint::BigUint;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::fs::File;
+use std::io::{Read, Write};
 
 /// Represents the blockchain, containing a list of blocks.
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Blockchain {
     /// Vector of blocks in the chain.
     pub blocks: Vec<Block>,
@@ -15,21 +19,40 @@ pub struct Blockchain {
 impl Blockchain {
     /// Initializes a new blockchain with the genesis block.
     pub fn new() -> Self {
+        // Define the genesis block parameters
+        let genesis_previous_hash = vec![0u8; 32];
+        let genesis_difficulty_target = 0x1d00ffff; // Bitcoin's initial difficulty target
+        let genesis_timestamp = 1231006505; // Bitcoin's genesis block timestamp
+
         // Create the coinbase transaction for the genesis block
         let genesis_coinbase_tx = Self::create_genesis_coinbase_transaction();
 
         // Create the genesis block with the coinbase transaction
-        let genesis_block = Block::new(
-            vec![genesis_coinbase_tx],
-            vec![0u8; 32], // Previous hash is all zeros for the genesis block
-            0x1d00ffff,    // Difficulty bits for Bitcoin genesis block
-        );
+        let genesis_block = Block {
+            header: BlockHeader {
+                version: 1,
+                previous_hash: genesis_previous_hash,
+                merkle_root: vec![], // Will be computed below
+                timestamp: genesis_timestamp,
+                difficulty_target: genesis_difficulty_target,
+                nonce: 2083236893, // Precomputed nonce to satisfy proof-of-work
+            },
+            transactions: vec![genesis_coinbase_tx],
+        };
+
+        // Compute the Merkle root and set it in the block header
+        let merkle_root = genesis_block.compute_merkle_root();
+
+        let mut genesis_block = genesis_block;
+        genesis_block.header.merkle_root = merkle_root;
+
+        // Initialize the blockchain with the genesis block
         let mut blockchain = Blockchain {
             blocks: vec![genesis_block.clone()],
             utxo_set: HashMap::new(),
         };
 
-        // Process the UTXO set for the genesis block (if any transactions)
+        // Update the UTXO set with the genesis block
         blockchain.update_utxo_set(&genesis_block);
 
         blockchain
@@ -227,10 +250,25 @@ impl Blockchain {
 
         hash_value <= target
     }
+
+    pub fn save_to_file(&self, filename: &str) -> Result<(), String> {
+        let serialized = bincode::serialize(&self).map_err(|e| e.to_string())?;
+        let mut file = File::create(filename).map_err(|e| e.to_string())?;
+        file.write_all(&serialized).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn load_from_file(filename: &str) -> Result<Self, String> {
+        let mut file = File::open(filename).map_err(|e| e.to_string())?;
+        let mut buffer = Vec::new();
+        file.read_to_end(&mut buffer).map_err(|e| e.to_string())?;
+        let blockchain = bincode::deserialize(&buffer).map_err(|e| e.to_string())?;
+        Ok(blockchain)
+    }
 }
 
 /// Represents an outpoint, referencing a specific output in a transaction.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OutPoint {
     /// Transaction ID.
     pub txid: Vec<u8>,
