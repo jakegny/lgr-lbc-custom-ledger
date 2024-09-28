@@ -1,241 +1,209 @@
+use crate::blockchain::block::Block;
 use crate::blockchain::blockchain::Blockchain;
-use crate::network::message::{InventoryItem, Message};
-use log::{error, info};
+use crate::blockchain::transaction::Transaction;
+use std::collections::HashSet;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
-#[derive(Clone)]
-pub struct Peer {
-    pub stream: Arc<Mutex<TcpStream>>,
-    pub address: String,
-}
+use super::message::Message;
 
-#[derive(Clone)]
 pub struct Node {
+    /// The blockchain maintained by the node.
     pub blockchain: Arc<Mutex<Blockchain>>,
-    pub peers: Arc<Mutex<Vec<Peer>>>,
+    /// The mempool of unconfirmed transactions.
+    pub mempool: Arc<Mutex<Vec<Transaction>>>,
+    /// List of connected peers (streams).
+    pub peers: Arc<Mutex<Vec<Arc<Mutex<TcpStream>>>>>,
 }
 
 impl Node {
-    pub fn new(blockchain: Arc<Mutex<Blockchain>>) -> Self {
+    pub fn new(blockchain: Arc<Mutex<Blockchain>>, mempool: Arc<Mutex<Vec<Transaction>>>) -> Self {
         Node {
             blockchain,
+            mempool,
             peers: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
-    pub async fn start(&self, bind_addr: &str) -> tokio::io::Result<()> {
-        let listener = TcpListener::bind(bind_addr).await?;
-        info!("Node listening on {}", bind_addr);
+    pub async fn start(self, listener: TcpListener) {
+        let node = Arc::new(self);
 
         loop {
-            let (stream, addr) = listener.accept().await?;
-            info!("New connection from {}", addr);
+            match listener.accept().await {
+                Ok((stream, addr)) => {
+                    println!("New connection from {}", addr);
 
-            let peer = Peer {
-                stream: Arc::new(Mutex::new(stream)),
-                address: addr.to_string(),
-            };
-
-            let blockchain = Arc::clone(&self.blockchain);
-            let peers = Arc::clone(&self.peers);
-
-            tokio::spawn(async move {
-                handle_connection(peer, blockchain, peers).await;
-            });
-        }
-    }
-
-    pub async fn connect_to_peer(&self, addr: &str) -> tokio::io::Result<()> {
-        let stream = TcpStream::connect(addr).await?;
-        info!("Connected to peer {}", addr);
-        println!("Connected to peer {}", addr);
-
-        let peer = Peer {
-            stream: Arc::new(Mutex::new(stream)),
-            address: addr.to_string(),
-        };
-
-        let blockchain = Arc::clone(&self.blockchain);
-        let peers = Arc::clone(&self.peers);
-
-        tokio::spawn(async move {
-            handle_connection(peer, blockchain, peers).await;
-        });
-
-        Ok(())
-    }
-}
-
-async fn handle_connection(
-    peer: Peer,
-    blockchain: Arc<Mutex<Blockchain>>,
-    peers: Arc<Mutex<Vec<Peer>>>,
-) {
-    // Add peer to the list
-    {
-        let mut peers_guard = peers.lock().await;
-        peers_guard.push(peer.clone());
-        println!("Added peer {}", peer.address);
-    }
-
-    let mut buffer = vec![0u8; 1024];
-
-    loop {
-        let n = {
-            let mut stream_guard = peer.stream.lock().await;
-            match stream_guard.read(&mut buffer).await {
-                Ok(0) => {
-                    info!("Connection closed by {}", peer.address);
-                    break;
+                    let node_clone = node.clone();
+                    tokio::spawn(async move {
+                        node_clone.handle_connection(stream).await;
+                    });
                 }
-                Ok(n) => n,
                 Err(e) => {
-                    error!("Error reading from {}: {}", peer.address, e);
+                    println!("Failed to accept connection: {}", e);
+                }
+            }
+        }
+    }
+
+    async fn handle_connection(&self, stream: TcpStream) {
+        // Wrap the stream in Arc<Mutex<>> for sharing
+        let stream = Arc::new(Mutex::new(stream));
+
+        // Add the stream to the list of peers
+        {
+            let mut peers = self.peers.lock().await;
+            peers.push(stream.clone());
+        }
+
+        // Read data from the stream
+        loop {
+            let mut stream_lock = stream.lock().await;
+            match read_message(&mut *stream_lock).await {
+                Ok(message) => {
+                    drop(stream_lock); // Release the lock before handling the message
+                    self.handle_message(message, &stream).await;
+                }
+                Err(e) => {
+                    println!("Error reading from connection: {}", e);
                     break;
                 }
             }
-        }; // MutexGuard is dropped here
+        }
 
-        // Deserialize the message
-        let message: Message = match bincode::deserialize(&buffer[..n]) {
-            Ok(msg) => msg,
-            Err(e) => {
-                error!("Failed to deserialize message from {}: {}", peer.address, e);
-                continue;
-            }
-        };
-
-        // Handle the message
-        handle_message(message, &peer, &blockchain, &peers).await;
+        // Remove the stream from the list of peers
+        {
+            let mut peers = self.peers.lock().await;
+            peers.retain(|peer| !Arc::ptr_eq(peer, &stream));
+        }
     }
 
-    // Remove peer from the list
-    {
-        let mut peers_guard = peers.lock().await;
-        peers_guard.retain(|p| p.address != peer.address);
+    async fn handle_message(&self, message: Message, stream: &Arc<Mutex<TcpStream>>) {
+        match message {
+            Message::Transaction(tx) => {
+                // Handle transaction
+                self.handle_incoming_transaction(tx).await;
+            }
+            Message::Block(block) => {
+                // Handle block
+                self.handle_incoming_block(block).await;
+            }
+            Message::GetBlockchain => {
+                // Send blockchain to requester
+                let blockchain = self.blockchain.lock().await;
+                let serialized = bincode::serialize(&*blockchain).unwrap();
+                let _ = write_message(stream, &serialized).await;
+            }
+            Message::BlockchainData(_) => {
+                // Update local blockchain
+                // let mut local_blockchain = self.blockchain.lock().await;
+                // *local_blockchain = blockchain;
+            }
+            Message::RequestPeers => {
+                // Send list of peers to requester
+                // let peers = self.peers.lock().await;
+                // let peer_addresses: Vec<String> = peers
+                //     .iter()
+                //     .map(|peer| peer.lock().unwrap().peer_addr().unwrap().to_string())
+                //     .collect();
+                // let message = Message::Peers(peer_addresses);
+                // let serialized = bincode::serialize(&message).unwrap();
+                // let _ = write_message(stream, &serialized).await;
+            }
+            Message::Peers(peer_addresses) => {
+                // Connect to new peers
+                // for peer_address in peer_addresses {
+                //     self.connect_to_peer(&peer_address).await;
+                // }
+            }
+            _ => {
+                println!("Received unhandled message: {:?}", message);
+            }
+            Message::Ping => {
+                let message = Message::Pong;
+                let serialized = bincode::serialize(&message).unwrap();
+                let _ = write_message(stream, &serialized).await;
+            }
+            Message::Pong => {}
+        }
     }
-}
 
-async fn handle_message(
-    message: Message,
-    peer: &Peer,
-    blockchain: &Arc<Mutex<Blockchain>>,
-    peers: &Arc<Mutex<Vec<Peer>>>,
-) {
-    match message {
-        Message::Version {
-            version,
-            best_height,
-        } => {
-            // Respond with own version and blockchain height
-            let blockchain_guard = blockchain.lock().await;
-            let response = Message::Version {
-                version: 1,
-                best_height: blockchain_guard.blocks.len() as u64,
-            };
-            send_message(peer, response).await;
-        }
-        Message::GetBlocks => {
-            // Send block headers
-            let blockchain_guard = blockchain.lock().await;
-            let block_hashes: Vec<Vec<u8>> =
-                blockchain_guard.blocks.iter().map(|b| b.hash()).collect();
-            let inv = Message::Inv {
-                items: block_hashes.into_iter().map(InventoryItem::Block).collect(),
-            };
-            send_message(peer, inv).await;
-        }
-        Message::Inv { items } => {
-            // Request missing blocks or transactions
-            let blockchain_guard = blockchain.lock().await;
-            let mut missing = vec![];
-            for item in items {
-                match item {
-                    InventoryItem::Block(hash) => {
-                        if !blockchain_guard.blocks.iter().any(|b| b.hash() == hash) {
-                            missing.push(InventoryItem::Block(hash));
-                        }
-                    }
-                    InventoryItem::Transaction(_txid) => {
-                        // Handle transactions if needed
-                    }
-                }
-            }
-            if !missing.is_empty() {
-                let get_data = Message::GetData { items: missing };
-                send_message(peer, get_data).await;
-            }
-        }
-        Message::GetData { items } => {
-            // Send requested blocks or transactions
-            let blockchain_guard = blockchain.lock().await;
-            for item in items {
-                match item {
-                    InventoryItem::Block(hash) => {
-                        if let Some(block) =
-                            blockchain_guard.blocks.iter().find(|b| b.hash() == hash)
-                        {
-                            let block_message = Message::Block(block.clone());
-                            send_message(peer, block_message).await;
-                        }
-                    }
-                    InventoryItem::Transaction(_txid) => {
-                        // Handle transactions if needed
-                    }
+    /// Handles an incoming transaction.
+    pub async fn handle_incoming_transaction(&self, tx: Transaction) {
+        let blockchain = self.blockchain.lock().await;
+        if blockchain
+            .validate_transaction(&tx, &blockchain.utxo_set)
+            .is_ok()
+        {
+            drop(blockchain);
+            let mut mempool = self.mempool.lock().await;
+
+            // Check if transaction is already in mempool
+            if !mempool.iter().any(|t| t.hash() == tx.hash()) {
+                mempool.push(tx.clone());
+
+                // Broadcast transaction to peers
+                let peers = self.peers.lock().await;
+                for peer in peers.iter() {
+                    let message = Message::Transaction(tx.clone());
+                    let serialized = bincode::serialize(&message).unwrap();
+                    let _ = write_message(peer, &serialized).await;
                 }
             }
         }
-        Message::Block(block) => {
-            // Validate and add the block
-            info!("Received block from {}", peer.address);
-            let mut blockchain_guard = blockchain.lock().await;
-            if blockchain_guard.add_block(block.clone()).is_ok() {
-                info!("Added new block from {}", peer.address);
-                // Broadcast the new block to other peers
-                broadcast_message(
-                    peers,
-                    Message::Inv {
-                        items: vec![InventoryItem::Block(block.hash())],
-                    },
-                )
-                .await;
+    }
+
+    /// Handles an incoming block.
+    pub async fn handle_incoming_block(&self, block: Block) {
+        let mut blockchain = self.blockchain.lock().await;
+        if blockchain.add_block(block.clone()).is_ok() {
+            // Update mempool
+            self.update_mempool(&block).await;
+
+            // Broadcast block to peers
+            let peers = self.peers.lock().await;
+            for peer in peers.iter() {
+                let message = Message::Block(block.clone());
+                let serialized = bincode::serialize(&message).unwrap();
+                let _ = write_message(peer, &serialized).await;
             }
         }
-        Message::Transaction(_tx) => {
-            // Handle incoming transaction
-            // You can add it to a mempool and include it in the next mined block
-        }
+    }
+
+    /// Updates the mempool by removing transactions that have been included in a block.
+    async fn update_mempool(&self, block: &Block) {
+        let mut mempool = self.mempool.lock().await;
+        let block_txids: HashSet<Vec<u8>> = block.transactions.iter().map(|tx| tx.hash()).collect();
+
+        mempool.retain(|tx| !block_txids.contains(&tx.hash()));
     }
 }
 
-async fn send_message(peer: &Peer, message: Message) {
-    let bytes = bincode::serialize(&message).expect("Failed to serialize message");
-    println!("Sending message to {}. Bytes: {:?}", peer.address, bytes);
-    let mut stream_guard = peer.stream.lock().await;
+/// Reads a message from the stream with proper framing.
+async fn read_message(
+    stream: &mut TcpStream,
+) -> Result<Message, Box<dyn std::error::Error + Send + Sync>> {
+    let mut length_bytes = [0u8; 4];
+    stream.read_exact(&mut length_bytes).await?;
+    let length = u32::from_be_bytes(length_bytes) as usize;
 
-    if let Err(e) = stream_guard.write_all(&bytes).await {
-        println!("Failed to send message to {}: {:?}", peer.address, e);
-        error!("Failed to send message to {}: {:?}", peer.address, e);
-        // Optionally handle disconnection
-        return;
-    }
+    let mut buffer = vec![0u8; length];
+    stream.read_exact(&mut buffer).await?;
 
-    println!("Sent message to {}", peer.address);
-    // MutexGuard is dropped here
+    let message: Message = bincode::deserialize(&buffer)?;
+    Ok(message)
 }
 
-pub async fn broadcast_message(peers: &Arc<Mutex<Vec<Peer>>>, message: Message) {
-    let peers_guard = peers.lock().await;
-    let peers_clone = peers_guard.clone(); // Clone the peers list
-    drop(peers_guard); // Drop the lock before awaiting
-    println!("Broadcasting message to all peers");
+/// Writes a message to the stream with proper framing.
+async fn write_message(
+    stream: &Arc<Mutex<TcpStream>>,
+    data: &[u8],
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let length = (data.len() as u32).to_be_bytes();
 
-    for peer in peers_clone.iter() {
-        let peer_clone = peer.clone();
-        println!("Sending message to {}", peer_clone.address);
-        send_message(&peer_clone, message.clone()).await;
-    }
+    let mut stream_lock = stream.lock().await;
+    stream_lock.write_all(&length).await?;
+    stream_lock.write_all(data).await?;
+    Ok(())
 }

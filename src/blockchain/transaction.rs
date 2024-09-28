@@ -1,4 +1,6 @@
 use crate::utils::double_sha256;
+use bincode;
+use log::info;
 use secp256k1::{ecdsa::Signature, Message, PublicKey, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
 
@@ -30,8 +32,8 @@ pub struct Transaction {
     /// List of outputs.
     pub outputs: Vec<TransactionOutput>,
     /// Optional transaction ID (hash).
-    #[serde(skip_serializing, skip_deserializing)]
-    pub txid: Option<Vec<u8>>,
+    // #[serde(skip_serializing, skip_deserializing)]
+    pub txid: Vec<u8>,
 }
 
 impl Transaction {
@@ -40,9 +42,9 @@ impl Transaction {
         let mut tx = Transaction {
             inputs,
             outputs,
-            txid: None,
+            txid: vec![],
         };
-        tx.txid = Some(tx.hash());
+        tx.txid = tx.hash();
         tx
     }
 
@@ -81,8 +83,8 @@ impl Transaction {
             // Serialize and hash the transaction
             let serialized = bincode::serialize(&temp_tx).expect("Failed to serialize transaction");
             let tx_hash = double_sha256(&serialized);
-            println!("Signing input {}: tx_hash = {:?}", i, tx_hash);
-            println!(
+            info!("Signing input {}: tx_hash = {:?}", i, tx_hash);
+            info!(
                 "Previous output script_pub_key: {:?}",
                 prev_output.script_pub_key
             );
@@ -151,9 +153,6 @@ impl Transaction {
             // Serialize and hash the transaction
             let serialized = bincode::serialize(&temp_tx).expect("Failed to serialize transaction");
             let tx_hash = double_sha256(&serialized);
-            println!("Verifying input {}: tx_hash = {:?}", i, tx_hash);
-            println!("Extracted signature: {:?}", sig_bytes);
-            println!("Extracted public key: {:?}", pubkey_bytes);
 
             let msg = match Message::from_digest_slice(&tx_hash) {
                 Ok(m) => m,

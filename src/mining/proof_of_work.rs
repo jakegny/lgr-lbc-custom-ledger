@@ -1,7 +1,6 @@
-// src/blockchain/proof_of_work.rs
-
-use crate::blockchain::block::{Block, BlockHeader};
+use crate::blockchain::block::Block;
 use crate::blockchain::transaction::{Transaction, TransactionOutput};
+use log::info;
 // use crate::utils::double_sha256;
 use num_bigint::BigUint;
 // use num_traits::Zero;
@@ -33,33 +32,17 @@ impl Miner {
         let mut block_transactions = vec![coinbase_tx];
         block_transactions.extend(transactions);
 
-        // Create the block with the transactions including the coinbase
-        let mut block = Block {
-            header: BlockHeader {
-                version: 1,
-                previous_hash: previous_block.hash(),
-                merkle_root: vec![], // Will be computed below
-                timestamp: current_timestamp(),
-                difficulty_target: self.bits,
-                nonce: 0,
-            },
-            transactions: block_transactions,
-        };
-
-        // Compute the Merkle root and set it in the block header
-        block.header.merkle_root = block.compute_merkle_root();
-        // .expect("Failed to compute Merkle root");
-
+        let mut block = Block::new(block_transactions, previous_block.hash(), self.bits);
         let target = compact_to_target(block.header.difficulty_target);
 
-        println!("Mining new block...");
+        info!("Mining new block...");
         loop {
             let hash = block.hash();
             let hash_value = BigUint::from_bytes_be(&hash);
 
             if hash_value <= target {
-                println!("Block mined! Nonce: {}", block.header.nonce);
-                println!("Block hash: {:x?}", hash);
+                info!("Block mined! Nonce: {}", block.header.nonce);
+                info!("Block hash: {:x?}", hash);
                 break;
             } else {
                 block.header.nonce = block.header.nonce.wrapping_add(1);
@@ -87,8 +70,8 @@ fn create_coinbase_transaction(recipient_pubkey_hash: Vec<u8>, amount: u64) -> T
         script_pub_key: recipient_pubkey_hash,
     }];
 
-    let mut tx = Transaction::new(inputs, outputs);
-    tx.txid = Some(tx.hash());
+    let tx = Transaction::new(inputs, outputs);
+    // tx.txid = Some(tx.hash());
     tx
 }
 

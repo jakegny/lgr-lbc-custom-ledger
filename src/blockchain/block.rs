@@ -41,7 +41,8 @@ impl Block {
                 version: 1,
                 previous_hash,
                 merkle_root: vec![],
-                timestamp: Self::current_timestamp(),
+                // hack to make the timestamp work
+                timestamp: 1727127200, // Self::current_timestamp(),
                 difficulty_target,
                 nonce: 0,
             },

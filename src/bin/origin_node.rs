@@ -18,8 +18,8 @@ async fn main() {
     let miner_pubkey_hash = vec![1, 2, 3, 4]; // Replace with actual pubkey hash
     let difficulty_bits = DIFFICULTY;
     let miner = Miner::new(difficulty_bits, miner_pubkey_hash);
-    let worker_node = WorkerNode::new(miner, Some(0));
+    let worker_node = WorkerNode::new(miner, Some(8000));
 
     // Start mining
-    worker_node.start(vec!["127.0.0.1:8000".to_string()]);
+    worker_node.start(vec![]);
 }

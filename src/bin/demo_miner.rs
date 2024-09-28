@@ -1,7 +1,7 @@
 use rusty_coin::blockchain::{
     blockchain::OutPoint, Blockchain, Transaction, TransactionInput, TransactionOutput,
 };
-use rusty_coin::mining::Miner;
+use rusty_coin::mining::proof_of_work::Miner;
 use rusty_coin::utils::double_sha256;
 use secp256k1::{rand, Secp256k1, SecretKey};
 use std::collections::HashMap;
@@ -23,7 +23,7 @@ fn main() {
     let miner = Miner::new(0x1e0fffff, miner_pubkey_hash.clone());
 
     // User 2
-    let (user_private_key, user_public_key) = secp.generate_keypair(&mut rng);
+    let (_, user_public_key) = secp.generate_keypair(&mut rng);
     let user_pubkey_bytes = user_public_key.serialize();
     let user_pubkey_hash = double_sha256(&user_pubkey_bytes);
 
@@ -89,7 +89,7 @@ fn create_coinbase_transaction(recipient_pubkey_hash: Vec<u8>, amount: u64) -> T
 }
 
 fn create_and_sign_transaction(
-    secp: &Secp256k1<secp256k1::All>,
+    __: &Secp256k1<secp256k1::All>,
     sender_private_key: &SecretKey,
     sender_pubkey_hash: &Vec<u8>,
     recipient_pubkey_hash: &Vec<u8>,
