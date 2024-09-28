@@ -1,7 +1,6 @@
 use crate::blockchain::block::{Block, BlockHeader};
 use crate::blockchain::transaction::{Transaction, TransactionOutput};
 use crate::utils::{double_sha256, load_key_pair, save_key_pair, DIFFICULTY};
-use log::info;
 use num_bigint::BigUint;
 use rand::rngs::OsRng;
 use secp256k1::{PublicKey, Secp256k1, SecretKey};
@@ -50,7 +49,7 @@ impl Blockchain {
     fn create_genesis_coinbase_transaction() -> Transaction {
         // Load or generate key pair as before
         let sender_keypair_path = "sender_keypair.txt";
-        let (sender_sk, sender_pk) = if Path::new(sender_keypair_path).exists() {
+        let (_, sender_pk) = if Path::new(sender_keypair_path).exists() {
             load_key_pair(sender_keypair_path).expect("Failed to load sender's key pair")
         } else {
             let secp = Secp256k1::new();

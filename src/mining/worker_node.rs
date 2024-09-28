@@ -4,7 +4,6 @@ use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-use crate::blockchain::block::Block;
 use crate::blockchain::blockchain::Blockchain;
 use crate::blockchain::transaction::Transaction;
 use crate::mining::proof_of_work::Miner;
@@ -191,14 +190,6 @@ impl WorkerNode {
                 self.address.clone(),
             )
         }
-    }
-
-    /// Updates the mempool by removing transactions that have been included in a new block.
-    fn update_mempool(&self, block: &Block) {
-        let mut mempool = self.mempool.lock().unwrap();
-        let block_txids: HashSet<Vec<u8>> = block.transactions.iter().map(|tx| tx.hash()).collect();
-
-        mempool.retain(|tx| !block_txids.contains(&tx.hash()));
     }
 
     /// Connects to known peers.

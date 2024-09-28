@@ -1,5 +1,8 @@
-use secp256k1::{PublicKey, Secp256k1, SecretKey};
-use std::{fs, io};
+use secp256k1::{PublicKey, SecretKey};
+use std::{
+    fs, io,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 pub mod hashing;
 
@@ -18,7 +21,6 @@ pub fn save_key_pair(
 }
 
 pub fn load_key_pair(filepath: &str) -> io::Result<(SecretKey, PublicKey)> {
-    let secp = Secp256k1::new();
     let content = fs::read_to_string(filepath)?;
     let mut lines = content.lines();
     let sk_hex = lines
@@ -42,3 +44,12 @@ pub const DIFFICULTY: u32 = 0x1e0fffff; // 0x1f00ffff; // 0x1d00ffff; // Bitcoin
                                         // medium difficulty: 0x1d10ffff
                                         // low difficulty: 0x1e00ffff
                                         // 0x1e0fffff betweenlow and medium (in theory)
+
+/// Gets the current Unix timestamp in seconds.
+#[allow(dead_code)]
+fn current_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("Time went backwards")
+        .as_secs()
+}

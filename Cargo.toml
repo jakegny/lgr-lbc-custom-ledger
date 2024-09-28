@@ -28,10 +28,6 @@ name = "miner"
 path = "src/bin/demo_miner.rs"
 
 [[bin]]
-name = "rusty_coin_node"
-path = "src/bin/node.rs"
-
-[[bin]]
 name = "rusty_coin_miner"
 path = "src/bin/miner.rs"
 
@@ -42,3 +38,7 @@ path = "src/bin/origin_node.rs"
 [[bin]]
 name = "transaction_sender"
 path = "src/bin/send_transaction.rs"
+
+[[bin]]
+name = "visualize_blockchain"
+path = "src/bin/visualize_blockchain.rs"
