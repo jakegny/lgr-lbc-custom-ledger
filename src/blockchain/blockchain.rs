@@ -1,11 +1,23 @@
 use crate::blockchain::block::{Block, BlockHeader};
 use crate::blockchain::transaction::{Transaction, TransactionOutput};
-use crate::utils::double_sha256;
+use crate::utils::{double_sha256, load_key_pair, save_key_pair, DIFFICULTY};
 use num_bigint::BigUint;
+use rand::rngs::OsRng;
+use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
+use std::path::Path;
+
+/// Represents an outpoint, referencing a specific output in a transaction.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct OutPoint {
+    /// Transaction ID.
+    pub txid: Vec<u8>,
+    /// Output index.
+    pub index: u32,
+}
 
 /// Represents the blockchain, containing a list of blocks.
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -19,32 +31,7 @@ pub struct Blockchain {
 impl Blockchain {
     /// Initializes a new blockchain with the genesis block.
     pub fn new() -> Self {
-        // Define the genesis block parameters
-        let genesis_previous_hash = vec![0u8; 32];
-        let genesis_difficulty_target = 0x1d00ffff; // Bitcoin's initial difficulty target
-        let genesis_timestamp = 1231006505; // Bitcoin's genesis block timestamp
-
-        // Create the coinbase transaction for the genesis block
-        let genesis_coinbase_tx = Self::create_genesis_coinbase_transaction();
-
-        // Create the genesis block with the coinbase transaction
-        let genesis_block = Block {
-            header: BlockHeader {
-                version: 1,
-                previous_hash: genesis_previous_hash,
-                merkle_root: vec![], // Will be computed below
-                timestamp: genesis_timestamp,
-                difficulty_target: genesis_difficulty_target,
-                nonce: 2083236893, // Precomputed nonce to satisfy proof-of-work
-            },
-            transactions: vec![genesis_coinbase_tx],
-        };
-
-        // Compute the Merkle root and set it in the block header
-        let merkle_root = genesis_block.compute_merkle_root();
-
-        let mut genesis_block = genesis_block;
-        genesis_block.header.merkle_root = merkle_root;
+        let genesis_block = Blockchain::genesis_block();
 
         // Initialize the blockchain with the genesis block
         let mut blockchain = Blockchain {
@@ -60,8 +47,21 @@ impl Blockchain {
 
     // Helper function to create a coinbase transaction
     fn create_genesis_coinbase_transaction() -> Transaction {
-        // Create a dummy public key hash for the genesis block
-        let recipient_pubkey_hash = vec![0u8; 32]; // This can be any value for the genesis block
+        // Load or generate key pair as before
+        let sender_keypair_path = "sender_keypair.txt";
+        let (_, sender_pk) = if Path::new(sender_keypair_path).exists() {
+            load_key_pair(sender_keypair_path).expect("Failed to load sender's key pair")
+        } else {
+            let secp = Secp256k1::new();
+            let mut rng = OsRng::default();
+            let sender_sk = SecretKey::new(&mut rng);
+            let sender_pk = PublicKey::from_secret_key(&secp, &sender_sk);
+            save_key_pair(&sender_sk, &sender_pk, sender_keypair_path)
+                .expect("Failed to save sender's key pair");
+            (sender_sk, sender_pk)
+        };
+        let recipient_pubkey_bytes = sender_pk.serialize();
+        let recipient_pubkey_hash = double_sha256(&recipient_pubkey_bytes); // vec![0u8; 32]; // This can be any value for the genesis block
 
         // Coinbase transactions have no inputs
         let inputs = vec![];
@@ -73,6 +73,31 @@ impl Blockchain {
         }];
 
         Transaction::new(inputs, outputs)
+    }
+
+    pub fn get_utxo_set(&self) -> HashMap<OutPoint, TransactionOutput> {
+        self.utxo_set.clone()
+    }
+
+    pub fn genesis_block() -> Block {
+        // Define the genesis block parameters
+        let genesis_previous_hash = vec![
+            172, 45, 210, 88, 101, 36, 190, 13, 90, 67, 181, 144, 233, 50, 78, 222, 111, 12, 132,
+            221, 177, 35, 158, 66, 209, 173, 92, 117, 36, 190, 207, 21,
+        ];
+        let genesis_difficulty_target = DIFFICULTY; //0x1f00ffff; // 0x1d00ffff; // Bitcoin's initial difficulty target
+
+        // Create the coinbase transaction for the genesis block
+        let genesis_coinbase_tx = Blockchain::create_genesis_coinbase_transaction();
+
+        // Create the genesis block with the coinbase transaction
+        let genesis_block = Block::new(
+            vec![genesis_coinbase_tx],
+            genesis_previous_hash,
+            genesis_difficulty_target,
+        );
+
+        genesis_block
     }
 
     /// Adds a block to the blockchain after validation.
@@ -90,7 +115,7 @@ impl Blockchain {
     }
 
     /// Validates a block before adding it to the blockchain.
-    fn validate_block(&self, block: &Block) -> Result<(), String> {
+    pub fn validate_block(&self, block: &Block) -> Result<(), String> {
         // Check previous block hash
         let last_block = self.blocks.last().unwrap();
         if block.header.previous_hash != last_block.hash() {
@@ -115,7 +140,7 @@ impl Blockchain {
     }
 
     /// Validates the transactions in a block.
-    fn validate_transactions(&self, transactions: &[Transaction]) -> Result<(), String> {
+    pub fn validate_transactions(&self, transactions: &[Transaction]) -> Result<(), String> {
         let mut temp_utxo_set = self.utxo_set.clone();
         let mut spent_outpoints = HashSet::new();
 
@@ -156,7 +181,7 @@ impl Blockchain {
     }
 
     /// Validates a single transaction.
-    fn validate_transaction(
+    pub fn validate_transaction(
         &self,
         tx: &Transaction,
         utxo_set: &HashMap<OutPoint, TransactionOutput>,
@@ -267,17 +292,8 @@ impl Blockchain {
     }
 }
 
-/// Represents an outpoint, referencing a specific output in a transaction.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct OutPoint {
-    /// Transaction ID.
-    pub txid: Vec<u8>,
-    /// Output index.
-    pub index: u32,
-}
-
 /// Converts a compact representation of the difficulty target to a BigUint.
-fn compact_to_target(bits: u32) -> num_bigint::BigUint {
+pub fn compact_to_target(bits: u32) -> num_bigint::BigUint {
     use num_bigint::BigUint;
 
     let exponent = ((bits >> 24) & 0xFF) as u32;

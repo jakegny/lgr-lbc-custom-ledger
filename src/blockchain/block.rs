@@ -2,7 +2,6 @@ use crate::blockchain::merkle_tree::MerkleTree;
 use crate::blockchain::transaction::Transaction;
 use crate::utils::double_sha256;
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlockHeader {
@@ -41,7 +40,8 @@ impl Block {
                 version: 1,
                 previous_hash,
                 merkle_root: vec![],
-                timestamp: Self::current_timestamp(),
+                // hack to make the timestamp work
+                timestamp: 1727127200, // Self::current_timestamp(),
                 difficulty_target,
                 nonce: 0,
             },
@@ -56,13 +56,5 @@ impl Block {
         let tx_hashes: Vec<Vec<u8>> = self.transactions.iter().map(|tx| tx.hash()).collect();
         let merkle_tree = MerkleTree::new(&tx_hashes).expect("Failed to create Merkle Tree");
         merkle_tree.root()
-    }
-
-    /// Gets the current Unix timestamp in seconds.
-    fn current_timestamp() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("Time went backwards")
-            .as_secs()
     }
 }

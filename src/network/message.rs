@@ -1,15 +1,19 @@
 use serde::{Deserialize, Serialize};
 
-use crate::blockchain::{Block, Transaction};
+use crate::blockchain::{Block, Blockchain, Transaction};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum Message {
-    Version { version: u32, best_height: u64 },
-    GetBlocks,
-    Inv { items: Vec<InventoryItem> },
-    GetData { items: Vec<InventoryItem> },
+    NewBlock(Block),
     Block(Block),
     Transaction(Transaction),
+    GetBlockchain,
+    BlockchainData(Blockchain),
+    RequestPeers,
+    Peers(Vec<String>),
+    Ping,
+    Pong,
+    BroadcastTransaction(Transaction),
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

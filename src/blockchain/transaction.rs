@@ -1,6 +1,12 @@
+use std::collections::HashMap;
+
 use crate::utils::double_sha256;
+use bincode;
+use log::info;
 use secp256k1::{ecdsa::Signature, Message, PublicKey, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
+
+use super::blockchain::OutPoint;
 
 /// Represents an input in a transaction, referencing a previous output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,8 +36,8 @@ pub struct Transaction {
     /// List of outputs.
     pub outputs: Vec<TransactionOutput>,
     /// Optional transaction ID (hash).
-    #[serde(skip_serializing, skip_deserializing)]
-    pub txid: Option<Vec<u8>>,
+    // #[serde(skip_serializing, skip_deserializing)]
+    pub txid: Vec<u8>,
 }
 
 impl Transaction {
@@ -40,9 +46,9 @@ impl Transaction {
         let mut tx = Transaction {
             inputs,
             outputs,
-            txid: None,
+            txid: vec![],
         };
-        tx.txid = Some(tx.hash());
+        tx.txid = tx.hash();
         tx
     }
 
@@ -81,8 +87,8 @@ impl Transaction {
             // Serialize and hash the transaction
             let serialized = bincode::serialize(&temp_tx).expect("Failed to serialize transaction");
             let tx_hash = double_sha256(&serialized);
-            println!("Signing input {}: tx_hash = {:?}", i, tx_hash);
-            println!(
+            info!("Signing input {}: tx_hash = {:?}", i, tx_hash);
+            info!(
                 "Previous output script_pub_key: {:?}",
                 prev_output.script_pub_key
             );
@@ -151,9 +157,6 @@ impl Transaction {
             // Serialize and hash the transaction
             let serialized = bincode::serialize(&temp_tx).expect("Failed to serialize transaction");
             let tx_hash = double_sha256(&serialized);
-            println!("Verifying input {}: tx_hash = {:?}", i, tx_hash);
-            println!("Extracted signature: {:?}", sig_bytes);
-            println!("Extracted public key: {:?}", pubkey_bytes);
 
             let msg = match Message::from_digest_slice(&tx_hash) {
                 Ok(m) => m,
@@ -202,6 +205,73 @@ impl Transaction {
 
         Ok(hash)
     }
+}
+
+pub fn create_and_sign_transaction(
+    sender_private_key: &SecretKey,
+    sender_pubkey_hash: &Vec<u8>,
+    recipient_pubkey_hash: &Vec<u8>,
+    utxo_set: &HashMap<OutPoint, TransactionOutput>,
+    amount: u64,
+) -> Result<Transaction, String> {
+    // Find UTXOs owned by the sender
+    let mut accumulated = 0u64;
+    let mut inputs = vec![];
+    let mut used_outpoints = vec![];
+
+    for (outpoint, output) in utxo_set.iter() {
+        if &output.script_pub_key == sender_pubkey_hash {
+            accumulated += output.amount;
+            inputs.push(TransactionInput {
+                previous_output_hash: outpoint.txid.clone(),
+                previous_output_index: outpoint.index,
+                script_sig: vec![], // Will be filled after signing
+            });
+            used_outpoints.push(outpoint.clone());
+
+            if accumulated >= amount {
+                break;
+            }
+        }
+    }
+
+    if accumulated < amount {
+        return Err("Not enough funds".to_string());
+    }
+
+    // Create outputs
+    let mut outputs = vec![];
+
+    // Output to recipient
+    outputs.push(TransactionOutput {
+        amount,
+        script_pub_key: recipient_pubkey_hash.clone(),
+    });
+
+    // Change back to sender if any
+    if accumulated > amount {
+        outputs.push(TransactionOutput {
+            amount: accumulated - amount,
+            script_pub_key: sender_pubkey_hash.clone(),
+        });
+    }
+
+    // Create the transaction
+    let mut tx = Transaction::new(inputs, outputs);
+
+    // Closure to get previous output for signing
+    let get_previous_output = |txid: &[u8], index: u32| -> Option<TransactionOutput> {
+        let outpoint = OutPoint {
+            txid: txid.to_vec(),
+            index,
+        };
+        utxo_set.get(&outpoint).cloned()
+    };
+
+    // Sign the transaction inputs
+    tx.sign_inputs(sender_private_key, get_previous_output)?;
+
+    Ok(tx)
 }
 
 /// Builds a scriptSig by pushing the signature and public key onto the stack.
