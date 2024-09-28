@@ -29,15 +29,16 @@ pub struct WorkerNode {
 
 impl WorkerNode {
     /// Creates a new WorkerNode with the given miner and peers.
-    pub fn new(miner: Miner, _port: Option<u32>) -> Self {
+    pub fn new(miner: Miner, _port: Option<u32>, _blockchain: Option<Blockchain>) -> Self {
         let port = _port.unwrap_or(0);
         let listener = TcpListener::bind(format!("127.0.0.1:{}", port))
             .expect("Failed to bind to an available port");
+        let init_blockchain = _blockchain.unwrap_or(Blockchain::new());
 
         WorkerNode {
             miner,
             mempool: Arc::new(Mutex::new(VecDeque::new())),
-            blockchain: Arc::new(Mutex::new(Blockchain::new())),
+            blockchain: Arc::new(Mutex::new(init_blockchain)),
             address: String::new(),
             listener,
             connections: Arc::new(Mutex::new(HashMap::new())),
